@@ -1,0 +1,495 @@
+<!doctype html>
+
+<html lang="fr">
+
+<head>
+
+<meta charset="utf-8">
+
+<title>N-Back (1,2,3) — version autonome (feedback entraînement)</title>
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<style>
+
+  html,body {background:#111;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
+
+  .wrap {max-width:900px;margin:40px auto;padding:0 16px;text-align:center}
+
+  .digit {font-size:120px;font-weight:800;letter-spacing:.02em;margin:120px 0 40px}
+
+  .muted {opacity:.7;font-size:14px}
+
+  .btn {display:inline-block;background:#2f80ed;color:#fff;border:none;border-radius:10px;padding:10px 16px;font-size:16px;cursor:pointer}
+
+  .kbd {border:1px solid #777;border-radius:6px;padding:2px 6px}
+
+  .grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;max-width:600px;margin:0 auto}
+
+  .card {border:1px solid #333;border-radius:12px;padding:12px}
+
+  .fb {font-size:32px;margin-top:20px}
+
+  .ok {color:#8bdc65}
+
+  .err {color:#ff8a8a}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="wrap" id="app"></div>
+
+<script>
+
+/* ============================
+
+   PARAMÈTRES
+
+   ============================ */
+
+const DIGITS = ['0','1','2','3','4','5','6','7','8','9'];
+
+const TRIALS_PER_BLOCK = 20;       // ✅ 20 essais par bloc (au lieu de 40)
+
+const TARGET_RATE = 0.30;          // proportion approximative de cibles
+
+const SOA_MS = 3000;               // 1 chiffre toutes les 2,5 s
+
+const STIM_MS = 500;               // affichage du chiffre
+
+const RESP_KEY = 'j';              // touche de réponse
+
+const PRACTICE_TRIALS = 10;        // ✅ entraînement 10 essais
+
+const PRACTICE_FB_MS = 700;        // durée d'affichage du feedback entraînement
+
+/* ============================
+
+   ÉTAT & AIDES
+
+   ============================ */
+
+const app = document.getElementById('app');
+
+let timeline = [];     // liste des étapes
+
+let data = [];         // données des essais
+
+let runIndex = 0;      // index timeline
+
+let keyPressed = null; // touche pressée pendant l’essai courant
+
+let trialTimer = null; // timer essai
+
+function show(html) { app.innerHTML = html; }
+
+function onKeydownOnce(handler) {
+
+  function wrap(e){ window.removeEventListener('keydown', wrap); handler(e); }
+
+  window.addEventListener('keydown', wrap);
+
+}
+
+/* Génère séquence n-back */
+
+function generateNBackSequence(n, length){
+
+  const seq = [];
+
+  const isTarget = [];
+
+  for (let i=0;i<n;i++){ // préfixe non-cible
+
+    const d = DIGITS[Math.floor(Math.random()*DIGITS.length)];
+
+    seq.push(d); isTarget.push(false);
+
+  }
+
+  for (let i=n;i<length;i++){
+
+    const makeTarget = Math.random() < TARGET_RATE;
+
+    if (makeTarget){
+
+      seq.push(seq[i-n]); isTarget.push(true);
+
+    } else {
+
+      let d;
+
+      do { d = DIGITS[Math.floor(Math.random()*DIGITS.length)]; }
+
+      while (d === seq[i-n]);
+
+      seq.push(d); isTarget.push(false);
+
+    }
+
+  }
+
+  return {seq, isTarget};
+
+}
+
+/* Un essai (trial) — feedback optionnel */
+
+function trialView(stim, nLevel, index, isTarget, withFeedback=false){
+
+  keyPressed = null;
+
+  const start = performance.now();
+
+  function keyHandler(e){
+
+    const k = e.key.toLowerCase();
+
+    if (k === RESP_KEY) keyPressed = k;
+
+  }
+
+  window.addEventListener('keydown', keyHandler);
+
+  // Affiche stimulus
+
+  show(`
+
+    <div class="wrap">
+
+      <h2>${nLevel===0 ? 'Entraînement (1-back)' : 'Bloc '+nLevel+'-back'}</h2>
+
+      <div class="digit">${stim}</div>
+
+      <div class="muted">Réponse: <span class="kbd">${RESP_KEY.toUpperCase()}</span> si identique à ${nLevel===0?1:nLevel} essai(s) plus tôt.</div>
+
+    </div>
+
+  `);
+
+  // Cache le chiffre après STIM_MS
+
+  setTimeout(()=>{
+
+    const d = document.querySelector('.digit');
+
+    if (d) d.style.visibility = 'hidden';
+
+  }, STIM_MS);
+
+  // Fin d’essai = fin de fenêtre de réponse
+
+  trialTimer = setTimeout(()=>{
+
+    window.removeEventListener('keydown', keyHandler);
+
+    const rt = (keyPressed ? (performance.now() - start) : null);
+
+    // nLevel===0 signifie entraînement 1-back (affichage titre)
+
+    const logicalN = (nLevel===0 ? 1 : nLevel);
+
+    const correct = (isTarget && !!keyPressed) || (!isTarget && !keyPressed);
+
+    const row = {
+
+      n_level: logicalN,
+
+      phase: (nLevel===0 ? 'practice' : 'test'),
+
+      index, stimulus: stim,
+
+      is_target: isTarget,
+
+      key: keyPressed,
+
+      rt_ms: rt,
+
+      correct
+
+    };
+
+    data.push(row);
+
+    if (withFeedback){
+
+      // Affiche feedback rapide, puis next()
+
+      const fbClass = correct ? 'ok' : 'err';
+
+      const fbText  = correct ? '✅ Correct' : '❌ Incorrect';
+
+      show(`
+
+        <div class="wrap">
+
+          <h2>Entraînement (1-back)</h2>
+
+          <div class="digit" style="visibility:hidden">${stim}</div>
+
+          <div class="fb ${fbClass}">${fbText}</div>
+
+          <div class="muted">Prochain essai…</div>
+
+        </div>
+
+      `);
+
+      setTimeout(()=> next(), PRACTICE_FB_MS);
+
+    } else {
+
+      next();
+
+    }
+
+  }, SOA_MS);
+
+}
+
+/* Écrans simples */
+
+function pressAnyKeyScreen(html){
+
+  timeline.push(()=>{
+
+    show(html);
+
+    onKeydownOnce(()=> next());
+
+  });
+
+}
+
+/* Bloc test (n=1,2,3) */
+
+function block(nLevel, trials){
+
+  const {seq, isTarget} = generateNBackSequence(nLevel, trials);
+
+  // Intro
+
+  pressAnyKeyScreen(`
+
+    <div class="wrap">
+
+      <h2>Bloc ${nLevel}-back</h2>
+
+      <p>Des chiffres (0–9) vont défiler, un toutes les ${(SOA_MS/1000).toFixed(1)} secondes.</p>
+
+      <p>Appuyez sur <span class="kbd">${RESP_KEY.toUpperCase()}</span> si le chiffre est le même que celui d’il y a <b>${nLevel}</b> essai(s).</p>
+
+      <p class="muted">Stimulus ${STIM_MS} ms, intervalle ${(SOA_MS-STIM_MS)} ms. Pas de réponse sinon.</p>
+
+      <p class="muted">Appuyez sur une touche pour commencer.</p>
+
+    </div>
+
+  `);
+
+  // Trials
+
+  for (let i=0;i<trials;i++){
+
+    timeline.push(()=> trialView(seq[i], nLevel, i, isTarget[i], /*withFeedback=*/false));
+
+  }
+
+  // Résumé bloc
+
+  timeline.push(()=>{
+
+    const d = data.filter(x=>x.phase==='test' && x.n_level===nLevel);
+
+    const acc = d.length ? Math.round(100*d.filter(x=>x.correct).length/d.length) : 0;
+
+    pressAnyKeyScreen(`
+
+      <div class="wrap">
+
+        <h3>Fin du bloc ${nLevel}-back</h3>
+
+        <p>Exactitude : <b>${acc}%</b></p>
+
+        <p class="muted">Appuyez sur une touche pour continuer.</p>
+
+      </div>
+
+    `);
+
+    next();
+
+  });
+
+}
+
+/* Téléchargement CSV */
+
+function downloadCSV(filename, rows){
+
+  const keys = Object.keys(rows[0] || {n_level:'',phase:'',index:'',stimulus:'',is_target:'',key:'',rt_ms:'',correct:''});
+
+  const csv = [keys.join(',')].concat(
+
+    rows.map(r=> keys.map(k=>{
+
+      const v = r[k];
+
+      if (v===null || v===undefined) return '';
+
+      const s = String(v).replace(/"/g,'""');
+
+      return /[,"\n]/.test(s) ? `"${s}"` : s;
+
+    }).join(','))
+
+  ).join('\n');
+
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+
+  a.href = url; a.download = filename;
+
+  document.body.appendChild(a); a.click();
+
+  document.body.removeChild(a);
+
+  URL.revokeObjectURL(url);
+
+}
+
+/* Chronologie : accueil → entraînement → 1back → 2back → 3back → fin */
+
+function buildTimeline(){
+
+  // Accueil
+
+  pressAnyKeyScreen(`
+
+    <div class="wrap">
+
+      <h1>Tâche N-Back (chiffres)</h1>
+
+      <p>Répondez avec la touche <span class="kbd">${RESP_KEY.toUpperCase()}</span> quand le chiffre est identique à celui d’<b>n</b> essais plus tôt.</p>
+
+      <div class="grid" style="margin:24px auto 8px">
+
+        <div class="card"><b>Entraînement</b><div class="muted">1-back — ${PRACTICE_TRIALS} essais • feedback immédiat</div></div>
+
+        <div class="card"><b>Bloc 1-back</b><div class="muted">${TRIALS_PER_BLOCK} essais</div></div>
+
+        <div class="card"><b>Bloc 2-back</b><div class="muted">${TRIALS_PER_BLOCK} essais</div></div>
+
+        <div class="card"><b>Bloc 3-back</b><div class="muted">${TRIALS_PER_BLOCK} essais</div></div>
+
+      </div>
+
+      <p class="muted">Appuyez sur une touche pour commencer.</p>
+
+    </div>
+
+  `);
+
+  // Entraînement court 1-back (nLevel=0 => affichage "Entraînement", mais log n=1)
+
+  const {seq: pseq, isTarget: ptag} = generateNBackSequence(1, PRACTICE_TRIALS);
+
+  for (let i=0;i<PRACTICE_TRIALS;i++){
+
+    timeline.push(()=> trialView(pseq[i], /*nLevel=*/0, i, ptag[i], /*withFeedback=*/true));
+
+  }
+
+  timeline.push(()=>{
+
+    const d = data.filter(x=>x.phase==='practice');
+
+    const acc = d.length ? Math.round(100*d.filter(x=>x.correct).length/d.length) : 0;
+
+    pressAnyKeyScreen(`
+
+      <div class="wrap">
+
+        <h3>Fin de l’entraînement</h3>
+
+        <p>Exactitude : <b>${acc}%</b></p>
+
+        <p class="muted">Appuyez sur une touche pour continuer vers l’expérience.</p>
+
+      </div>
+
+    `);
+
+    next();
+
+  });
+
+  // Blocs 1, 2, 3 (20 essais chacun)
+
+  block(1, TRIALS_PER_BLOCK);
+
+  block(2, TRIALS_PER_BLOCK);
+
+  block(3, TRIALS_PER_BLOCK);
+
+  // Fin + téléchargement
+
+  timeline.push(()=>{
+
+    const acc = (n)=> {
+
+      const d = data.filter(x=>x.phase==='test' && x.n_level===n);
+
+      return d.length ? Math.round(100*d.filter(x=>x.correct).length/d.length) : 0;
+
+    };
+
+    show(`
+
+      <div class="wrap">
+
+        <h2>Merci !</h2>
+
+        <p>Exactitude — 1-back : <b>${acc(1)}%</b> • 2-back : <b>${acc(2)}%</b> • 3-back : <b>${acc(3)}%</b></p>
+
+        <p><button class="btn" id="dl">Télécharger les données (CSV)</button></p>
+
+        <p class="muted">Colonnes : n_level, phase, index, stimulus, is_target, key, rt_ms, correct</p>
+
+      </div>
+
+    `);
+
+    document.getElementById('dl').onclick = ()=> downloadCSV('nback_data.csv', data);
+
+  });
+
+}
+
+function next(){
+
+  if (runIndex < timeline.length){
+
+    const f = timeline[runIndex++];
+
+    if (typeof f === 'function') f();
+
+  }
+
+}
+
+buildTimeline();
+
+next();
+
+</script>
+
+</body>
+
+</html>
